@@ -9,3 +9,20 @@ homepage = "https://github.com/AtaraxiaSjel/anidb-api-rs"
 readme = "README.md"
 
 [dependencies]
+reqwest = "0.12.15"
+serde = { version = "1.0.219", features = ["derive"] }
+serde-xml-rs = "0.7.0"
+thiserror = "2.0.12"
+tracing = "0.1.41"
+
+[dev-dependencies]
+tokio = "1.44.2"
+tracing-subscriber = "0.3.19"
+
+[lints.rust]
+unsafe_code = "forbid"
+warnings = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
