@@ -7,6 +7,14 @@ authors = ["Dmitriy <ataraxiadev@ataraxiadev.com>"]
 description = "Rust library that provides wrapper for AniDB API"
 homepage = "https://github.com/AtaraxiaSjel/anidb-api-rs"
 readme = "README.md"
+exclude = [
+  ".cargo",
+  ".envrc",
+  "deny.toml",
+  "flake.nix",
+  "flake.lock",
+  "taplo.toml",
+]
 
 [dependencies]
 reqwest = "0.12.15"
