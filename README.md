@@ -28,7 +28,7 @@ Add the dependency to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-anidb-api = "0.1.0"
+anidb-api = "0.1.1"
 ```
 
 ## Usage Example
@@ -54,4 +54,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## License
 
-This project is licensed under the [MIT] or [Apache-2.0] License.
+This project is licensed under the [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) License.
