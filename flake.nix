@@ -151,7 +151,8 @@
               name = "animarr-devenv";
               env = {
                 NEXTEST_FAILURE_OUTPUT = "immediate";
-                NEXTEST_SUCCESS_OUTPUT = "never";
+                NEXTEST_SUCCESS_OUTPUT = "final";
+                RUST_LOG = "trace";
               };
               packages =
                 with pkgs;
