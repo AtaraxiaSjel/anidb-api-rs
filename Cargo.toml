@@ -17,23 +17,51 @@ exclude = [
 ]
 
 [dependencies]
+ascii = { version = "1.1.0", optional = true }
 async-trait = "0.1.88"
+format-bytes = { version = "0.3.0", optional = true }
 governor = "0.10.0"
-http = "1.3.1"
-http-serde = "2.1.1"
-reqwest = { version = "0.12.15", features = ["gzip"] }
-reqwest-middleware = "0.4.2"
-reqwest-ratelimit = "0.3.0"
-reqwest-tracing = "0.5.7"
+http = { version = "1.3.1", optional = true }
+http-serde = { version = "2.1.1", optional = true }
+itertools = { version = "0.14.0", optional = true }
+random-port = { version = "0.1.1", optional = true }
+reqwest = { version = "0.12.15", features = ["gzip"], optional = true }
+reqwest-middleware = { version = "0.4.2", optional = true }
+reqwest-ratelimit = { version = "0.3.0", optional = true }
+reqwest-tracing = { version = "0.5.7", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
-serde-xml-rs = "0.7.0"
+serde-xml-rs = { version = "0.7.0", optional = true }
 thiserror = "2.0.12"
-url = "2.5.4"
+tokio = { version = "1", features = ["net", "time"], optional = true }
+tracing = { version = "0.1.41", features = ["log"] }
+udp-stream = { version = "0.0.12", optional = true }
+url = { version = "2.5.4", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0.140"
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = ["http", "udp"]
+http = [
+  "dep:http",
+  "dep:http-serde",
+  "dep:reqwest",
+  "dep:reqwest-middleware",
+  "dep:reqwest-ratelimit",
+  "dep:reqwest-tracing",
+  "dep:serde-xml-rs",
+  "dep:url",
+]
+udp = [
+  "dep:ascii",
+  "dep:format-bytes",
+  "dep:itertools",
+  "dep:random-port",
+  "dep:tokio",
+  "dep:udp-stream",
+]
 
 [lints.rust]
 unsafe_code = "forbid"
