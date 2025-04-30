@@ -1,4 +1,4 @@
-use anidb_api::http::{AniDbHttpClient, models::anime::Anime};
+use anidb_api::http::{HttpClient, models::anime::Anime};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // Initialize the client
-    let anidb = AniDbHttpClient::new()?;
+    let anidb = HttpClient::new()?;
     // All IDs are Strings
     let anime_id = "17110";
     // Get xml data from AniDB and deserialize it into `Anime` struct

@@ -3,6 +3,6 @@ mod client;
 pub mod models;
 
 /// Async `AniDB` client
-pub use client::AniDbHttpClient;
+pub use client::HttpClient;
 /// Main error type for http client
 pub use models::common::ApiError;

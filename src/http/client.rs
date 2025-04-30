@@ -15,7 +15,7 @@ const CLIENT_VER: usize = 1;
 const HTTP_PROTO_VER: usize = 1;
 
 #[derive(Clone)]
-pub struct AniDbHttpClient {
+pub struct HttpClient {
     base_url: reqwest::Url,
     client: reqwest_middleware::ClientWithMiddleware,
 }
@@ -31,7 +31,7 @@ impl reqwest_ratelimit::RateLimiter for MyRateLimiter {
     }
 }
 
-impl AniDbHttpClient {
+impl HttpClient {
     /// Returns client with default rate limit (1 request per 2 seconds).
     /// # Errors
     /// This method fails if reqwest client has failed to initialized
