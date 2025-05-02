@@ -2,7 +2,6 @@ use super::models::{
     anime::Anime,
     common::{ApiError, ResponseError},
 };
-use async_trait::async_trait;
 use governor::Quota;
 use reqwest::Method;
 use reqwest_middleware::ClientBuilder;
@@ -24,7 +23,6 @@ struct MyRateLimiter {
     limiter: governor::DefaultDirectRateLimiter,
 }
 
-#[async_trait]
 impl reqwest_ratelimit::RateLimiter for MyRateLimiter {
     async fn acquire_permit(&self) {
         self.limiter.until_ready().await;
