@@ -20,4 +20,8 @@ pub enum ApiError {
     IncorrectUsernameOrPassword,
     #[error("Not logged in")]
     NotLoggedIn,
+    #[error("No UDP Api key specified")]
+    NoApiKey,
+    #[error("Unknown error")]
+    Unknown,
 }
