@@ -38,7 +38,7 @@ reqwest-tracing = { version = "0.5.7", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde-xml-rs = { version = "0.7.1", optional = true }
 thiserror = "2.0.12"
-tokio = { version = "1", features = ["net", "time"], optional = true }
+tokio = { version = "1", features = ["net", "rt", "time"], optional = true }
 tracing = { version = "0.1.41", features = ["log"] }
 udp-stream = { version = "0.0.12", optional = true }
 url = { version = "2.5.4", optional = true }
