@@ -2,15 +2,24 @@ use super::{
     ApiError, Result, UdpClient, client,
     response::UdpResponse,
     status::{ErrorCode, StatusCode},
+    util::check_status,
 };
-use std::{collections::HashMap, fmt::Debug, hash::Hash, net::SocketAddr, ops::Deref};
-use tracing::warn;
+use ecow::EcoString;
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::Debug,
+    hash::Hash,
+    net::SocketAddr,
+    ops::{Deref, DerefMut},
+};
+use tracing::{instrument, warn};
 
-pub(crate) struct CommandBuilder {
+pub(crate) struct CommandBuilder<'a> {
     cmd: String,
-    map: HashMap<String, String>,
+    map: HashMap<Cow<'a, str>, String>,
 }
-impl CommandBuilder {
+impl<'a> CommandBuilder<'a> {
     pub fn build(&self) -> String {
         let map = self.iter().map(|(k, v)| format!("{k}={v}"));
         let params = itertools::intersperse(map, "&".to_string()).collect::<String>();
@@ -19,29 +28,61 @@ impl CommandBuilder {
 
     pub fn new<K, V, const N: usize>(cmd: String, arr: [(K, V); N]) -> Self
     where
-        K: Into<String> + Eq + Hash,
+        K: Into<Cow<'a, str>> + Eq + Hash,
         V: Into<String>,
     {
         let map = arr
             .into_iter()
             .map(|(a, b)| (a.into(), b.into()))
-            .collect::<HashMap<String, String>>();
+            .collect::<HashMap<Cow<'a, str>, String>>();
         Self { cmd, map }
     }
 }
-impl Deref for CommandBuilder {
-    type Target = HashMap<String, String>;
+impl<'a> Deref for CommandBuilder<'a> {
+    type Target = HashMap<Cow<'a, str>, String>;
 
     fn deref(&self) -> &Self::Target {
         &self.map
+    }
+}
+impl DerefMut for CommandBuilder<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
     }
 }
 
 pub(crate) trait Command {
     fn build_command(&self, client: &UdpClient) -> CommandBuilder;
 
+    #[instrument(skip(self, client), level = "debug")]
     async fn request(&self, client: &mut UdpClient, command: &str) -> Result<UdpResponse> {
-        client.request(command.as_bytes()).await
+        let response = client.request(command.as_bytes()).await;
+        if let Ok(resp) = &response {
+            let error_code = ErrorCode::try_from(resp.status);
+            match error_code {
+                // Need reauth
+                Ok(ErrorCode::LoginFirst | ErrorCode::InvalidSession) => {
+                    warn!("Server return {}, trying to reauthenticate", resp.status);
+                    client.reset();
+                    client.execute::<UdpResponse>(self::Auth()).await?;
+                    let command = self.build_command(client).build();
+                    return client.request(command.as_bytes()).await;
+                }
+                _ => return response,
+            }
+        } else if let Err(error) = &response {
+            if error == &ApiError::Decrypt {
+                warn!(
+                    "Cannot decrypt server message. Assume auth timeout, trying to reauthenticate"
+                );
+                client.reset();
+                client.execute::<UdpResponse>(self::Encrypt()).await?;
+                client.execute::<UdpResponse>(self::Auth()).await?;
+                let command = self.build_command(client).build();
+                return client.request(command.as_bytes()).await;
+            }
+        }
+        response
     }
 
     #[tracing::instrument(skip_all, level = "debug")]
@@ -50,20 +91,7 @@ pub(crate) trait Command {
             return Err(ApiError::NotLoggedIn);
         }
         let command = self.build_command(client).build();
-        let response = self.request(client, &command).await?;
-        let error_code = ErrorCode::try_from(response.status);
-        match error_code {
-            // Need reauth
-            Ok(ErrorCode::LoginFirst | ErrorCode::InvalidSession) => {
-                warn!(
-                    "Server return {}, trying to reauthenticate",
-                    response.status
-                );
-                let _resp: UdpResponse = client.execute(self::Auth()).await?;
-                Ok(self.request(client, &command).await?.into())
-            }
-            _ => Ok(response.into()),
-        }
+        self.request(client, &command).await.map(Into::into)
     }
 }
 
@@ -85,6 +113,9 @@ impl Command for Encrypt {
         let params: [(&str, &str); 2] = [("user", username), ("type", "1")];
         CommandBuilder::new("ENCRYPT".to_string(), params)
     }
+    async fn request(&self, client: &mut UdpClient, command: &str) -> Result<UdpResponse> {
+        client.request(command.as_bytes()).await
+    }
     async fn execute<T: From<UdpResponse>>(&self, client: &mut UdpClient) -> Result<T> {
         if client.config.udp_api_key.is_none() {
             return Err(ApiError::NoApiKey);
@@ -96,9 +127,10 @@ impl Command for Encrypt {
             let salt = salt.next().ok_or(ApiError::UnexpectedResponse)?;
             client.calculate_enc_key(salt)?;
             client.enc_enabled = true;
+            Ok(resp.into())
+        } else {
+            Err(check_status(resp.status))
         }
-        // !TODO: Error handling
-        Ok(resp.into())
     }
 }
 
@@ -119,28 +151,22 @@ impl Command for Auth {
         ];
         CommandBuilder::new("AUTH".to_string(), params)
     }
+    async fn request(&self, client: &mut UdpClient, command: &str) -> Result<UdpResponse> {
+        client.request(command.as_bytes()).await
+    }
     async fn execute<T: From<UdpResponse>>(&self, client: &mut UdpClient) -> Result<T> {
         let command = self.build_command(client).build();
         let resp = self.request(client, &command).await?;
         // Check if login successful
         if resp.status == StatusCode::LoginFailed {
-            client.session_key = None;
-            client.authenticated = false;
-            client.behind_nat = false;
-            client.enc_enabled = false;
-            client.enc_key = Default::default();
+            client.reset();
             return Err(ApiError::IncorrectUsernameOrPassword);
         }
 
         if resp.status != StatusCode::LoginAccepted
-            && resp.status == StatusCode::LoginAcceptedNewVersion
+            && resp.status != StatusCode::LoginAcceptedNewVersion
         {
-            if resp.status.is_error() {
-                return Err(ApiError::ResponseError(
-                    ErrorCode::try_from(resp.status).unwrap(),
-                ));
-            }
-            return Err(ApiError::UnexpectedResponse);
+            return Err(check_status(resp.status));
         }
 
         let mut header = resp.message.split_whitespace();
@@ -170,27 +196,17 @@ impl Command for Logout {
         CommandBuilder::new("LOGOUT".to_string(), params)
     }
     async fn execute<T: From<UdpResponse>>(&self, client: &mut UdpClient) -> Result<T> {
+        if client.session_key.is_none() {
+            return Err(ApiError::NotLoggedIn);
+        }
         let command = self.build_command(client).build();
-        if client.session_key.is_some() {
-            let resp = self.request(client, &command).await?;
+        let resp = self.request(client, &command).await?;
 
-            if resp.status == StatusCode::LoggedOut {
-                client.session_key = None;
-                client.authenticated = false;
-                client.behind_nat = false;
-                client.enc_enabled = false;
-                client.enc_key = Default::default();
-                Ok(resp.into())
-            } else {
-                if resp.status.is_error() {
-                    return Err(ApiError::ResponseError(
-                        ErrorCode::try_from(resp.status).unwrap(),
-                    ));
-                }
-                Err(ApiError::UnexpectedResponse)
-            }
+        if resp.status == StatusCode::LoggedOut {
+            client.reset();
+            Ok(resp.into())
         } else {
-            Err(ApiError::NotLoggedIn)
+            Err(check_status(resp.status))
         }
     }
 }
@@ -207,7 +223,7 @@ impl Command for Ping {
         if resp.status == StatusCode::Pong {
             Ok(resp.into())
         } else {
-            Err(ApiError::UnexpectedResponse)
+            Err(check_status(resp.status))
         }
     }
 }
@@ -230,15 +246,51 @@ impl Command for AnimeDescription {
         let params: [(&str, &str); 3] = [("aid", &self.0), ("s", &s), ("part", "0")];
         CommandBuilder::new("ANIMEDESC".to_string(), params)
     }
-    // !TODO: implement get all parts
-    // async fn request(&self, client: &mut UdpClient, command: &str) -> Result<UdpResponse> {
-    //     let resp = client.request(command.as_bytes()).await?;
-    //     let data = resp.data.first().ok_or(ApiError::UnexpectedResponse)?;
-    //     let mut data_iter = data.split_terminator('|');
-    //     let current = data_iter.next().ok_or(ApiError::UnexpectedResponse)?;
-    //     let max = data_iter.next().ok_or(ApiError::UnexpectedResponse)?;
-    //     Ok(resp)
-    // }
+    #[instrument(skip(client), level = "debug")]
+    async fn execute<T: From<UdpResponse> + Debug>(&self, client: &mut UdpClient) -> Result<T> {
+        fn parse_data(data: &[String]) -> Result<(u32, u32, EcoString)> {
+            let data = data.first().ok_or(ApiError::UnexpectedResponse)?;
+            let mut data_iter = data.split_terminator('|');
+            let current = data_iter
+                .next()
+                .ok_or(ApiError::UnexpectedResponse)?
+                .parse::<u32>()
+                .map_err(|err| {
+                    ApiError::ParseError(format!("Failed conversion to u32: {:?}", err.kind()))
+                })?;
+            let max = data_iter
+                .next()
+                .ok_or(ApiError::UnexpectedResponse)?
+                .parse::<u32>()
+                .map_err(|err| {
+                    ApiError::ParseError(format!("Failed conversion to u32: {:?}", err.kind()))
+                })?;
+            let description = data_iter.next().ok_or(ApiError::UnexpectedResponse)?;
+            Ok((current, max, description.into()))
+        }
+
+        if client.session_key.is_none() {
+            return Err(ApiError::NotLoggedIn);
+        }
+        let mut command = self.build_command(client);
+        let mut response = self.request(client, &command.build()).await?;
+        if response.status != StatusCode::AnimeDescription {
+            return Ok(response.into());
+        }
+        // Parse index and description
+        let (mut current, mut max, mut description) = parse_data(&response.data)?;
+        while current + 1 < max {
+            command.insert("part".into(), (current + 1).to_string());
+            let new_command = self.build_command(client).build();
+            let new_response = self.request(client, &new_command).await?;
+            let (new_current, new_max, new_description) = parse_data(&new_response.data)?;
+            current = new_current;
+            max = new_max;
+            description.push_str(&new_description);
+        }
+        response.data = vec![description.into()];
+        Ok(response.into())
+    }
 }
 
 #[cfg(test)]

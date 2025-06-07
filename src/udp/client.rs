@@ -1,4 +1,7 @@
-use super::{ApiError, command::Command, config::UdpConfig, response::UdpResponse};
+use super::{
+    ApiError, command::Command, config::UdpConfig, response::UdpResponse, socket::AnidbSocket,
+    status::StatusCode,
+};
 use std::{
     fmt::Debug,
     io::Read,
@@ -17,7 +20,6 @@ use governor::{
     state::{InMemoryState, NotKeyed},
 };
 use md5::{Digest, Md5};
-use tokio::{net::UdpSocket, time::timeout};
 use tracing::{instrument, trace};
 
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -25,15 +27,12 @@ type RateLimiter = governor::RateLimiter<NotKeyed, InMemoryState, DefaultClock, 
 type Aes128EcbEnc = ecb::Encryptor<aes::Aes128>;
 type Aes128EcbDec = ecb::Decryptor<aes::Aes128>;
 
-/// Anidb Api definition states that udp packet size cannot be larger than 1400 bytes
-const MAX_UDP_SIZE: usize = 2048;
-pub(crate) const ANIDB_UDP_ADDRESS: &str = "api.anidb.net:9000";
 pub(crate) const ANIDB_API_VER: &str = "3";
 
 #[derive(Debug)]
 pub struct UdpClient {
     pub(crate) config: Arc<UdpConfig>,
-    pub(crate) socket: Arc<UdpSocket>,
+    pub(crate) socket: Arc<AnidbSocket>,
     pub(crate) rate_limiter: Arc<RateLimiter>,
     pub(crate) session_key: Option<EcoString>,
     pub(crate) timeout: Duration,
@@ -55,9 +54,10 @@ impl UdpClient {
         // !TODO: short and long period delay
         let quota = Quota::with_period(Duration::from_secs(2)).unwrap();
         let rate_limiter: RateLimiter = RateLimiter::direct(quota);
+        let timeout = Duration::from_secs(30);
 
         let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), config.local_port);
-        let socket = UdpSocket::bind(bind_addr).await.map_err(ApiError::Io)?;
+        let socket = AnidbSocket::new(bind_addr, timeout).await?;
 
         Ok(Self {
             config: Arc::new(config),
@@ -68,18 +68,16 @@ impl UdpClient {
             rate_limiter: Arc::new(rate_limiter),
             enc_enabled: false,
             enc_key: Default::default(),
-            timeout: Duration::from_secs(10),
+            timeout,
         })
     }
 
-    /// Connect udp socket to `AniDB` server
-    /// # Errors
-    /// Return `ApiError::Io` if socket failed to connect to `AniDB` server
-    pub async fn connect(&self) -> Result<()> {
-        self.socket
-            .connect(ANIDB_UDP_ADDRESS)
-            .await
-            .map_err(ApiError::Io)
+    pub(crate) fn reset(&mut self) {
+        self.session_key = None;
+        self.authenticated = false;
+        self.behind_nat = false;
+        self.enc_enabled = false;
+        self.enc_key = Default::default();
     }
 
     #[instrument(skip(self), level = "trace")]
@@ -98,68 +96,62 @@ impl UdpClient {
     }
 
     #[instrument(skip_all, level = "trace")]
-    pub(crate) async fn send_and_recv(
-        &self,
-        send_buf: &[u8],
-        recv_buf: &mut [u8],
-    ) -> Result<usize> {
-        self.rate_limiter.until_ready().await;
-
-        let len = timeout(self.timeout, self.socket.send(send_buf))
-            .await
-            .map_err(|_| ApiError::Timeout)?
-            .map_err(ApiError::Io)?;
-
-        trace!(length = %len, data = ?send_buf, "send request");
-
-        let len = timeout(self.timeout, self.socket.recv(recv_buf))
-            .await
-            .map_err(|_| ApiError::Timeout)?
-            .map_err(ApiError::Io)?;
-
-        trace!(length = %len, data = ?&recv_buf[..len], "received response");
-
-        Ok(len)
-    }
-
-    #[instrument(skip_all, level = "trace")]
     pub(crate) async fn request(&self, buf: &[u8]) -> Result<UdpResponse> {
-        let mut recv_buf = [0u8; MAX_UDP_SIZE];
+        let mut recv_buf = [0u8; 2048];
+        self.rate_limiter.until_ready().await;
 
         let (data, len) = if self.enc_enabled {
             let key = &self.enc_key;
             let encrypted = Aes128EcbEnc::new(key.into()).encrypt_padded_vec_mut::<Pkcs7>(buf);
             trace!(plain = ?buf, encrypted = ?encrypted, "data encrypted");
-            let len = self.send_and_recv(&encrypted, &mut recv_buf).await?;
+            let len = self.socket.send_raw(&encrypted, &mut recv_buf).await?;
 
             let decrypted = Aes128EcbDec::new(key.into())
                 .decrypt_padded_mut::<Pkcs7>(&mut recv_buf[..len])
-                .map_err(|_| ApiError::UnexpectedResponse)?;
+                .map_err(|_| ApiError::Decrypt)?;
             trace!(encrypted = ?encrypted, decrypted = ?decrypted, "data decrypted");
             (decrypted, decrypted.len())
         } else {
-            let len = self.send_and_recv(buf, &mut recv_buf).await?;
+            let len = self.socket.send_raw(buf, &mut recv_buf).await?;
             (&recv_buf[..], len)
         };
 
         // deflate
-        if len > 2 && data[0] == 0 && data[1] == 0 {
+        let response = if len > 2 && data[0] == 0 && data[1] == 0 {
             let mut decoder = DeflateDecoder::new(&data[2..len]);
             let mut buf: Vec<u8> = Vec::with_capacity(len + 10);
-            decoder.read_to_end(&mut buf)?;
+            decoder
+                .read_to_end(&mut buf)
+                .map_err(|err| ApiError::Io(err.kind()))?;
             trace!(data = ?buf, "deflate decoded");
             UdpResponse::from(&buf)
         } else {
             UdpResponse::from(&data[..len])
+        };
+        if let Ok(resp) = &response {
+            if resp.status == StatusCode::Banned {
+                let data = resp.data.clone();
+                let desc = itertools::intersperse(data, " ".to_string()).collect::<String>();
+                return Err(ApiError::Banned(desc));
+            }
         }
+        response
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn execute<T, C>(&mut self, command: C) -> Result<T>
-    where
-        T: From<UdpResponse> + Debug,
-        C: Command + Debug,
-    {
+    pub async fn execute<T: From<UdpResponse> + Debug>(
+        &mut self,
+        command: impl Command + Debug,
+    ) -> Result<T> {
         command.execute(self).await
     }
 }
+
+// !TODO: implement drop with logout
+// impl Drop for UdpClient {
+//     fn drop(&mut self) {
+//         tokio::spawn(async {
+//             self.execute::<UdpResponse>(command::Logout()).await;
+//         });
+//     }
+// }

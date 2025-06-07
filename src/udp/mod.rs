@@ -4,6 +4,7 @@ pub mod config;
 pub mod enums;
 pub(crate) mod response;
 pub mod secret_string;
+mod socket;
 pub(crate) mod status;
 pub(crate) mod util;
 
@@ -11,3 +12,5 @@ pub use client::Result;
 pub use client::UdpClient;
 pub use config::UdpConfig;
 pub use enums::ApiError;
+// !TODO: disable in future
+pub use response::UdpResponse;

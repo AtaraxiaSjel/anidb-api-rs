@@ -2,10 +2,11 @@ use thiserror::Error;
 
 use super::status::ErrorCode;
 
-#[derive(Debug, Error)]
+// !TODO: split into public api errors and library ones
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApiError {
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::ErrorKind),
     #[error("Timeout error")]
     Timeout,
     #[error("Response error: {0}")]
@@ -24,4 +25,8 @@ pub enum ApiError {
     NoApiKey,
     #[error("Unknown error")]
     Unknown,
+    #[error("Cannot decrypt server response")]
+    Decrypt,
+    #[error("Banned: {0}")]
+    Banned(String),
 }

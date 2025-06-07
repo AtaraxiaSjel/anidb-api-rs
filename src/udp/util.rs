@@ -1,29 +1,13 @@
 use super::{
-    ApiError, Result,
+    ApiError,
     status::{ErrorCode, StatusCode},
 };
 
-pub(crate) fn anidb_encode(input: &str) -> String {
-    input.replace('&', "&amp;").replace('\n', "<br />")
-}
-
-pub(crate) fn anidb_decode(input: &str) -> String {
-    input
-        .replace("<br />", "\n")
-        .replace('`', "'")
-        .replace('/', "|")
-}
-
-// !TODO: rewrite as macros with multiple status codes to check
-pub(crate) fn check_status(want: StatusCode, got: StatusCode) -> Result<()> {
-    if want != got {
-        return if want.is_error() {
-            Err(ApiError::ResponseError(
-                ErrorCode::try_from(want).unwrap(), // infallible
-            ))
-        } else {
-            Ok(())
-        };
+pub(crate) fn check_status(status: StatusCode) -> ApiError {
+    let error_code = ErrorCode::try_from(status);
+    if let Ok(err) = error_code {
+        ApiError::ResponseError(err)
+    } else {
+        ApiError::UnexpectedResponse
     }
-    Ok(())
 }
